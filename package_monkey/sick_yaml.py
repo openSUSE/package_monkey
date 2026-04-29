@@ -276,7 +276,7 @@ class YamlProducerBase(object):
 		with open(outputPath, "w") as ioStream:
 			self.renderHeader(ioStream)
 
-			print(f"# Automatically generated ({time.ctime()}) - do not edit", file = ioStream)
+			print(f"# Automatically generated - do not edit", file = ioStream)
 			if reference:
 				print(f"# Generated from {reference}", file = ioStream)
 			self.render(ioStream, **kwargs)
