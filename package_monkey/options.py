@@ -187,7 +187,13 @@ class ModelDescription(object):
 		return self._codebaseModel
 
 	def loadPreprocessorHints(self):
-		path = self.getPath('hints.conf')
+		codebase = self.codebaseModel
+		if codebase.hintsFile is not None:
+			path = self.getPath(codebase.hintsFile)
+			if not os.path.isfile(path):
+				raise Exception(f"Cannot access hints file at {path}")
+		else:
+			path = self.getPath('hints.conf')
 		hintsLoader = PreprocessorHintsLoader(path)
 		return hintsLoader.load()
 

@@ -1401,6 +1401,8 @@ class CodebaseLoader(MonkeyConfigLoader):
 				pass
 			elif key == 'architectures':
 				self.codebase.architectures = ArchSet(self.context.asStringList(key, value))
+			elif key == 'hints':
+				self.codebase.hintsFile = self.context.asString(key, value)
 			elif key == 'filter':
 				self.processFilters(self.context.dictContext(key, value))
 			elif key == 'api_url':

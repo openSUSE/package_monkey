@@ -273,12 +273,13 @@ class ArchSolver(object):
 
 		self._dummyRepo.internalize()
 
-		self.dependencyOracle = DependencyOracle(hints, trace = self.traceDisambiguation)
+		self.dependencyOracle = DependencyOracle(hints, self.pool)
 		hints.rebind(self.rpmFactory)
 
 		# This needs to be configurable via hints:
 		abiProviderKeys = (
 			'python(abi)',
+			'golang(API)',
 		)
 		self.abiManager = AbiManager(abiProviderKeys)
 
@@ -332,6 +333,9 @@ class ArchSolver(object):
 			infomsg(f"Created dummy rpm {name}; type={type}")
 
 		return rpm
+
+	def createScenarioRpm(self, name):
+		return self.createDummyRpm(name, RpmWrapper.TYPE_SCENARIO)
 
 	# solve some or all rpms in a set of repositories.
 	def solve(self, progressMeter, rpms = None, db = None, **kwargs):
@@ -482,6 +486,12 @@ class ArchSolver(object):
 				if rpm.trace:
 					infomsg(f"   requires {dep}")
 
+				conditionals = self.tryProcessConditional(rpm, dep)
+				if conditionals is not None:
+					for node in conditionals:
+						result.addConditional(dep, str(node))
+					continue
+
 				choices = self.dependencyToSelection(rpm, dep)
 				if choices is None:
 					if rpm.trace:
@@ -608,6 +618,32 @@ class ArchSolver(object):
 
 		return result
 
+	def tryProcessConditional(self, rpm, dep):
+		depString = str(dep)
+		if ' if ' not in depString and ' unless ' not in depString:
+			return None
+
+		try:
+			node = BooleanDependency.parse(depString, self.dependencyOracle)
+		except Exception as e:
+			errormsg(f"{rpm}: could not parse conditional dependency \"{depString}\" (exception {e})")
+			return None
+
+		implications = list(node.implications())
+
+		if rpm.trace:
+			infomsg(f"      compiled as {node}")
+			if len(implications) == 1 and str(implications[0]) == str(node):
+				pass
+			elif not implications:
+				infomsg(f"      never expands to any requirements (within this codebase); ignore it")
+			else:
+				infomsg(f"      transformed to the following requirement(s):")
+				for k in implications:
+					infomsg(f"         -> {k}")
+
+		return implications
+
 	def dependencyToSelection(self, rpm, dep):
 		# transform the dependency string if there is a rule for it
 		newString = self.hints.transformDependency(str(dep), rpm.shortname)
@@ -616,15 +652,6 @@ class ArchSolver(object):
 				infomsg(f"   transformed into {newString}")
 			dep = self.pool.Dep(newString, 1)
 			assert(dep is not None)
-
-		# Handle conditional dependencies. We evaluate the expression
-		# (using the variable settings defined in the hints file).
-		# May return None if that fails; in this case we treat it as "true".
-		depString = str(dep)
-		if ' if ' in depString:
-			condition = self.dependencyOracle.evalConditional(rpm, depString)
-			if condition == False:
-				return None
 
 		choices = set(self.pool.whatprovides(dep.id))
 		if choices and all(solvable.name.startswith('system:') for solvable in choices):
@@ -781,6 +808,28 @@ class ArchSolver(object):
 			ambiguousResult.failedAlternatives = disambiguation.failedAlternatives
 			return None
 
+		commonVersion = validFor.commonVersion
+		if commonVersion:
+			if trace:
+				infomsg(f"{rpm}: unique disambiguation using version {commonVersion}")
+
+			for rd in ambiguousResult:
+				if not rd.requiresDisambiguation:
+					continue
+
+				rpms = set()
+				for solution in validFor:
+					rpms.update(solution.selectedRpms)
+				rpms.intersection_update(rd.alternatives)
+				assert(rpms)
+
+				if trace:
+					infomsg(f"  {rd}: replace with {' '.join(map(str, rpms))}")
+
+				rd.solutions = rpms
+				rd.acceptableAmbiguity = True
+			return ambiguousResult
+
 		# replace ambiguous resolutions with symbolic rpms and
 		# record valid choices
 		for rd in ambiguousResult:
@@ -788,19 +837,8 @@ class ArchSolver(object):
 				continue
 
 			symbolicRpmNames = disambiguation.getSymbolicRpms(rd)
-
-			if trace:
-				infomsg(f"{rd} => {' '.join(symbolicRpmNames)}")
-
-			rpms = set()
-			for rpmName in disambiguation.getSymbolicRpms(rd):
-				symbolicRpm = self.createDummyRpm(rpmName, type = RpmWrapper.TYPE_SCENARIO)
-				rpms.add(symbolicRpm)
-				assert(symbolicRpm)
-
-			# This warning no longer makes sense; the new code handles multiple scenarios just fine.
-#			if len(rpms) > 1:
-#				warnmsg(f"{rpm}: dependency {rd} resolves to multiple scenario packages: {' '.join(map(str, rpms))}")
+			rpms = set(map(self.createScenarioRpm, symbolicRpmNames))
+			assert(all(rpms))
 
 			if trace:
 				infomsg(f"  {rd}: replace with {' '.join(map(str, rpms))}, {' '.join(map(str, validFor))}")
@@ -808,14 +846,14 @@ class ArchSolver(object):
 			rd.solutions = rpms
 			rd.acceptableAmbiguity = True
 
-		ambiguousResult.validScenarioChoices = validFor
+		ambiguousResult.validScenarioChoices = set(map(str, validFor))
 		ambiguousResult.controllingScenarioChoices = rpm.controllingScenarios
 		return ambiguousResult
 
 	def disambiguateOnePackage(self, installRpm, disambiguation):
 		trace = self.traceDisambiguation or installRpm.trace
 
-		verifiedScenarios = set()
+		verifiedScenarios = disambiguation.createEmptySubset()
 		for solution in disambiguation:
 			installRequest = self.InstallationRequest(self.pool, installRpm, scenarioVersion = solution.selectedVersions)
 
@@ -855,7 +893,7 @@ class ArchSolver(object):
 
 			if trace:
 				infomsg(f"  ok: successfully disambiguated {solution}")
-			verifiedScenarios.add(str(solution))
+			verifiedScenarios.add(solution)
 
 		return verifiedScenarios
 
@@ -985,11 +1023,14 @@ class ArchSolver(object):
 			if not rd.requiresDisambiguation:
 				continue
 
-			if rd.abstractScenarioPackage is None:
-				errorReport.add(f"   {rd}: no scenario for {' '.join(sorted(map(str, rd.alternatives)))}")
-				continue
-
-			scenarioVariables.add(rd.abstractScenarioPackage.scenarioVar)
+			if rd.abstractScenarioPackage is not None:
+				scenarioVariables.add(rd.abstractScenarioPackage.scenarioVar)
+			else:
+				# Do not report each and every dependency with alternatives; just report the one
+				# that is not covered by a scenario
+				lacking = rd.alternativesWithoutScenario()
+				if lacking:
+					errorReport.add(f"   {rd}: no scenario for {' '.join(sorted(map(str, lacking)))}")
 
 		if len(scenarioVariables) > 1:
 			errorReport.add(f"   using packages from multiple scenarios {' '.join(map(str, scenarioVariables))}: currently not supported")
@@ -1030,7 +1071,8 @@ class ArchSolver(object):
 
 		for rd in result:
 			if rd.requiresDisambiguation:
-				salad.add(rd, rd.alternatives)
+				if not salad.add(rd, rd.alternatives):
+					return None
 
 		with loggingFacade.temporaryIndent():
 			scenarioSolutions = salad.solve()
@@ -1197,9 +1239,24 @@ class ResolvedDependency(object):
 
 		return None
 
+	def alternativesWithoutScenario(self):
+		if not self.requiresDisambiguation:
+			return None
+
+		result = set()
+		for rpm in self.alternatives:
+			if not rpm.newControllingScenarios:
+				result.add(rpm)
+		return result
+
 	@property
 	def closure(self):
 		return self.alternatives.union(self.solutions)
+
+class ConditionalDependency(object):
+	def __init__(self, dep, parsed):
+		self.dep = dep
+		self.parsed = parsed
 
 class PackageDependencies(object):
 	unresolvableRpm = None
@@ -1208,6 +1265,7 @@ class PackageDependencies(object):
 		self.key = key
 		self.requiringPkg = requiringPkg
 		self._resolved = []
+		self.conditionals = []
 
 		self.validScenarioChoices = []
 		self.controllingScenarios = requiringPkg.newControllingScenarios
@@ -1236,6 +1294,14 @@ class PackageDependencies(object):
 		rd.addAlternatives(rpms, acceptable)
 		return rd
 
+	def addConditional(self, dep, parsed):
+		# strip out any white space; this will allow NewDB.load() to split the
+		# line just using str.split()
+		parsed = parsed.replace(' ', '')
+		rd = ConditionalDependency(dep, parsed)
+		self.conditionals.append(rd)
+		return rd
+
 	def __str__(self):
 		return f"{self.requiringPkg}"
 
@@ -1258,14 +1324,11 @@ class PackageDependencies(object):
 	def canAttemptScenarioDisambiguation(self, verbose = False):
 		errors = 0
 		for rd in self._resolved:
-			if not rd.requiresDisambiguation:
-				continue
-
-			for requiredRpm in rd.alternatives:
-				if not requiredRpm.newControllingScenarios:
-					if verbose:
-						errormsg(f"{self.requiringPkg} -> {requiredRpm}: not covered by a scenario")
-					errors += 1
+			lacking = rd.alternativesWithoutScenario()
+			if lacking:
+				if verbose:
+					errormsg(f"{self}/{rd}: no scenario for {' '.join(sorted(map(str, lacking)))}")
+				errors += 1
 
 		return errors == 0
 
@@ -1421,58 +1484,48 @@ class ResolverLog(object):
 				nest.print(f"{issue}")
 
 ##################################################################
-# This is used to guess what we should be doing with boolean
-# dependencies. For instance, some packages have
-#  Requires: blah if systemd
-# If we want to build a product w/o systemd, then we want to ignore
-# this dependency. If we build a product w/ systemd, then we
-# better pay attention.
-# This is not a concise implementation; it's a heuristic.
-##################################################################
+# This is used to deal with boolean dependencies.
+# Most of the heavy lifting occurs in DependencyParser, but we
+# need to resolve package names and "name >= 1.7" type of
+# expressions.
 class DependencyOracle(object):
-	def __init__(self, hints, trace = False):
+	solvOPER = {
+		'=':	solv.REL_EQ,
+		'<':	solv.REL_LT,
+		'>':	solv.REL_GT,
+		'<=':	solv.REL_LT | solv.REL_EQ,
+		'>=':	solv.REL_GT | solv.REL_EQ,
+		'!=':	solv.REL_GT | solv.REL_LT,
+	}
+
+	def __init__(self, hints, pool):
 		self.hints = hints
-		self.trace = trace
+		self.pool = pool
 
-	# Callback from term.eval:
-	def evalFileDependency(self, path):
-		return False
-
-	# Callback from term.eval:
-	def evalUnversionedDependency(self, name):
-		return self.hints.getConditional(name)
-
-	# Callback from term.eval:
-	def evalVersionedDependency(self, name, op, version):
-		return False
-
-	CONDITIONAL_DEP_RE = re.compile('\((.*) if (.*)\)')
-
-	# return True or False if we could evaluate the condition; None otherwise
-	def evalConditional(self, rpm, depString):
-		m = self.CONDITIONAL_DEP_RE.match(depString)
-		if m is None:
-			return None
-
-		what, condition = m.groups()
-
-		try:
-			term = BooleanDependency.parse(condition)
-		except Exception as e:
-			errormsg(f"{rpm}: cannot parse conditional {condition} - assuming it evaluates to False")
-			return None
-
-		status = term.eval(self)
-
-		if status is None:
-			if self.trace:
-				infomsg(f"{rpm}: conditional {condition} -> {what}: undefined condition; assuming False")
+	# check for 'magic' macro names that we should not try to expand,
+	# such as:
+	#	product-update()
+	# for now, this is hard-coded but will receive a command in hints.conf
+	def isMacroInvocation(self, name):
+		i = name.find('(')
+		if i < 0:
 			return False
+		# infomsg(f"inspecting invocation of {name}")
+		funcName = name[:i]
+		return funcName in ('product-update', )
 
-		if self.trace and not status:
-			infomsg(f"{rpm}: ignoring conditional dependency {depString}")
+	def whatprovides(self, name, flags = None, evr = None):
+		nameId = self.pool.str2id(name)
 
-		return status
+		if flags is None:
+			depId = nameId
+		else:
+			evrId = self.pool.str2id(evr)
+			oper = self.solvOPER[flags]
+			depId = self.pool.rel2id(nameId, evrId, oper)
+
+		choices = set(self.pool.whatprovides(depId))
+		return choices
 
 class AbiManager(object):
 	class ABI(object):
@@ -1678,6 +1731,122 @@ class PreprocessorHints(object):
 			if common:
 				selection.replace(common)
 
+	class WildcardPreferBase(object):
+		def __init__(self, preferredName, alternativeNames):
+			self.preferredName = preferredName
+			self.alternativeNames = alternativeNames
+			self.dropped = None
+
+		def begin(self, selection, preferredRpm):
+			self.trace = any(rpm.trace for rpm in selection.rpms)
+			self.preferredRpm = preferredRpm
+			self.selection = selection
+			self.dropped = set()
+
+		def done(self):
+			if self.dropped:
+				if self.trace:
+					infomsg(f"prefer {self.preferredRpm} over {' '.join(map(str, self.dropped))}")
+				self.selection.difference_update(self.dropped)
+			self.dropped = None
+
+		def __str__(self):
+			return f"{self.__class__.__name__}([{' '.join(self.alternativeNames)}] -> [{self.preferredName}])"
+
+		def maybeDrop(self, regex, stripPrefix = None):
+			for other in self.selection.rpms:
+				if other is self.preferredRpm:
+					continue
+
+				name = other.shortname
+				if stripPrefix is not None:
+					if not name.startswith(stripPrefix):
+						continue
+					name = name[len(stripPrefix):]
+				if regex.fullmatch(name):
+					self.dropped.add(other)
+
+	# prefer lib.* over \0-devel
+	class WildcardPrefer1(WildcardPreferBase):
+		def __init__(self, preferredName, alternativeNames):
+			super().__init__(preferredName, alternativeNames)
+			self.preferredPattern = re.compile(preferredName)
+			if self.preferredPattern.groups == 0:
+				self.preferredPattern = re.compile(f"({preferredName})")
+
+			self.suffixREs = []
+			self.alternativeExpansions = []
+			for pattern in alternativeNames:
+				if pattern.startswith('\\1') and pattern.count('\\') == 1:
+					# at match time, we remove the matched pattern from other
+					# rpms, then check the suffix against the RE
+					self.suffixREs.append(re.compile(pattern[2:]))
+				else:
+					self.alternativeExpansions.append(pattern)
+
+		def process(self, selection):
+			for rpm in sorted(selection.rpms, key = lambda r: len(r.shortname)):
+				if rpm not in selection.rpms:
+					continue
+
+				m = self.preferredPattern.fullmatch(rpm.shortname)
+				if not m:
+					continue
+
+				self.begin(selection, rpm)
+				for suffixRE in self.suffixREs:
+					self.maybeDrop(suffixRE, stripPrefix = m.group(1))
+				for s in self.alternativeExpansions:
+					fullRE = re.compile(m.expand(s))
+					self.maybeDrop(fullRE)
+				self.done()
+
+	# prefer perl over perl-[A-Z].*
+	class WildcardPrefer2(WildcardPreferBase):
+		def __init__(self, preferredName, alternativeNames):
+			super().__init__(preferredName, alternativeNames)
+			self.alternativePatterns = list(map(re.compile, alternativeNames))
+
+		def process(self, selection):
+			preferredRpm = selection.nameToRpm(self.preferredName)
+			if preferredRpm is None:
+				return
+
+			self.begin(selection, preferredRpm)
+			for re in self.alternativePatterns:
+				self.maybeDrop(re)
+			self.done()
+
+	class WildcardPreferTransform(object):
+		def __init__(self, select):
+			self.select = select
+
+		def rebind(self, rpmFactory):
+			pass
+
+		def __str__(self):
+			return f"WildcardAmbiguityTransform({self.select})"
+
+		def __call__(self, selection):
+			if len(selection.rpms) > 1:
+				self.select.process(selection)
+
+		@classmethod
+		def factory(klass, preferredNames, alternativeNames):
+			if len(preferredNames) != 1:
+				errormsg(f"wildcard prefer rules can have only one preferred package")
+				return None
+
+			preferredName, = preferredNames
+			if any('\\1' in name for name in alternativeNames):
+				# preferredName is a regexp, alternativeNames are expansion templates
+				select = PreprocessorHints.WildcardPrefer1(preferredName, alternativeNames)
+			else:
+				# preferredName is a literal, alternativeNames are regexes
+				select = PreprocessorHints.WildcardPrefer2(preferredName, alternativeNames)
+
+			return klass(select)
+
 	class PreTransform(object):
 		def __init__(self, srcName, dstName, context = None):
 			self.srcName = srcName
@@ -1708,7 +1877,6 @@ class PreprocessorHints(object):
 		self.acceptableAmbiguities = []
 		self.ambiguityTransforms = []
 		self.dependencyTransforms = {}
-		self.conditionals = {}
 		self.acceptUnknownAmbiguities = False
 
 		self._nameFilter = OBSNameFilter()
@@ -1769,10 +1937,7 @@ class PreprocessorHints(object):
 			self.ambiguityTransforms.insert(0, self._alwaysPreferTransform)
 
 	def addConditional(self, name, value):
-		self.conditionals[name] = value
-
-	def getConditional(self, name):
-		return self.conditionals.get(name)
+		pass
 
 	def addDependencyTransform(self, fromString, toString, **kwargs):
 		xfrm = self.PreTransform(fromString, toString, **kwargs)
@@ -1847,8 +2012,17 @@ class PreprocessorHints(object):
 	#	prefer foo over bar
 	# and
 	#	transform-ambiguity foo bar into foo
-	def definePreference(self, preferredSet, originalSet):
-		self.defineAmbiguityTransform(preferredSet + originalSet, preferredSet)
+	def definePreference(self, preferredNames, alternativeNames):
+		self.defineAmbiguityTransform(preferredNames + alternativeNames, preferredNames)
+
+	def defineWildcardPreference(self, preferredNames, alternativeNames):
+		# wildcard rules can look like this:
+		#   prefer python311-.* over \0[0-9_.]+
+		#	this will disambiguate between different versions of the same python module
+		#   prefer perl over perl-.*
+		#	this will prefer perl over any perl-Foobar module
+		transform = self.WildcardPreferTransform.factory(preferredNames, alternativeNames)
+		self.ambiguityTransforms.append(transform)
 
 	class RpmSelection(object):
 		def __init__(self, rpms):
@@ -1867,7 +2041,8 @@ class PreprocessorHints(object):
 
 		def discard(self, rpm):
 			self.rpms.discard(rpm)
-			self._names.discard(rpm.shortname)
+			if self._names is not None:
+				self._names.pop(rpm.shortname, None)
 			self._builds = None
 
 		@property
@@ -2002,6 +2177,7 @@ class PreprocessorHintsLoader(object):
 
 		infomsg(f"Loading preprocessor hints from {self.filename}")
 		with open(self.filename) as f:
+			self.currentContext = None
 			for line in f.readlines():
 				self.lineno += 1
 
@@ -2084,6 +2260,7 @@ class PreprocessorHintsLoader(object):
 			self.maxArgs = maxArgs
 			self.keywords = keywords
 			self.types = types
+			self.context = None
 			self.call = call
 
 		def __str__(self):
@@ -2157,6 +2334,12 @@ class PreprocessorHintsLoader(object):
 				if super().__call__(hints, *args, key, values) is False:
 					return False
 
+	class CommandGroup(object):
+		def __init__(self, name):
+			self.name = name
+			self.setter = None
+			self.valid = False
+
 	COMMAND_LIST = [
 	Command('ignore',			1,	call = PreprocessorHints.addIgnoredDependencies),
 	Command('ignore-suffix',		1,	call = PreprocessorHints.addIgnoredSuffixes),
@@ -2186,6 +2369,8 @@ class PreprocessorHintsLoader(object):
 	InfixCommand('transform-ambiguity',	2,	call = PreprocessorHints.defineAmbiguityTransform,
 							splitWord = 'into'),
 	InfixCommand('prefer',			2,	call = PreprocessorHints.definePreference,
+							splitWord = 'over'),
+	InfixCommand('match-prefer',		2,	call = PreprocessorHints.defineWildcardPreference,
 							splitWord = 'over'),
 	]
 	COMMANDS = {}
@@ -2219,20 +2404,50 @@ class PreprocessorHintsLoader(object):
 				elif not cmd.convertArgument(args, i, targetType):
 					return self.error(f"{cmd}: invalid type for argument #{i}: not a valid {targetType}")
 
+		if self.currentContext is not cmd.context and \
+		   self.currentContext is not None:
+			# The next command has not context, or a different one
+			self.currentContext.valid = False
+
+		self.currentContext = cmd.context
+		if self.currentContext is not None:
+			# reset the context
+			if self.currentContext.setter is cmd:
+				self.currentContext.valid = False
+			elif not self.currentContext.valid:
+				return self.error(f"{cmd.name}: outside of context (should be preceded by {self.currentContext.setter})")
+
+			kwargs['context'] = self.currentContext
+
 		try:
 			if cmd(self.hints, args, **kwargs) is False:
 				return self.error(f"{cmd.name}: invalid argument(s): {' '.join(args)}")
 		except Exception as e:
 			return self.error(f"{cmd.name} {' '.join(args)}: caught exception {e}")
 
+		if self.currentContext is not None and \
+		   not self.currentContext.valid:
+			return self.error(f"{cmd.name} was expected to initialize the context but did not")
+
 		return True
 
 	def initCommands(self):
 		if self.COMMANDS:
 			return
+
 		self.COMMANDS = {}
+		sharedContext = None
 		for cmd in self.COMMAND_LIST:
+			if isinstance(cmd, self.CommandGroup):
+				sharedContext = cmd
+				continue
+
 			self.COMMANDS[cmd.name] = cmd
+			cmd.context = sharedContext
+
+			# First command in a group must be the one to initialize the context
+			if sharedContext and sharedContext.setter is None:
+				sharedContext.setter = cmd
 
 	def processCommandWords(self, words):
 		command = words.pop(0)
@@ -2244,21 +2459,6 @@ class PreprocessorHintsLoader(object):
 			return self.handleCommand(handler, words)
 
 		return self.error(f"unsupported command {command}")
-
-	def processDict(self, words):
-		d = {}
-		while words:
-			key = words.pop(0)
-			if not key.endswith(':'):
-				return False
-			key = key.rstrip(':')
-
-			rpmNames = set()
-			while words and not words[0].endswith(':'):
-				rpmNames.add(words.pop(0))
-
-			d[key] = rpmNames
-		return d
 
 	def processContinuation(self, line):
 		if self.current is None:

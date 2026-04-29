@@ -159,7 +159,7 @@ class ListRenderer(object):
 			print(f"  {self.MSG_EMPTY}")
 		self.count = None
 
-	def renderItem(self, *args, **kwargs):
+	def renderItem(self, *args, renderFunc = None, **kwargs):
 		if self.count is None:
 			raise Exception(f"You must call ListRenderer.beginList() first")
 
@@ -167,14 +167,17 @@ class ListRenderer(object):
 			print(f"  {self.MSG_HEADER}:")
 		self.count += 1
 
-		item = self.itemRenderer.render(*args, **kwargs)
+		if renderFunc is None:
+			renderFunc = self.itemRenderer.render
+
+		item = renderFunc(*args, **kwargs)
 		print(f"    - {item}")
 
 class DependencyRenderer(ListRenderer):
-	def renderPackageList(self, packages):
+	def renderPackageList(self, packages, **kwargs):
 		self.beginList()
 		for rpm in sorted(packages, key = str):
-			self.renderItem(rpm)
+			self.renderItem(rpm, **kwargs)
 
 class RequiresRenderer(DependencyRenderer):
 	MSG_EMPTY = "does not require anything"
@@ -192,6 +195,7 @@ class RequiresRenderer(DependencyRenderer):
 
 		common = rpm.solutions.common
 		self.renderPackageList(common)
+		self.renderPackageList(rpm.conditionals.common, renderFunc = self.renderConditional)
 
 		specific = {}
 		for arch in rpm.architectures:
@@ -199,11 +203,24 @@ class RequiresRenderer(DependencyRenderer):
 				if req not in specific:
 					specific[req] = ArchSet()
 				specific[req].add(arch)
+			for req in rpm.getConditionals(arch).difference(rpm.conditionals.common):
+				if req not in specific:
+					specific[req] = ArchSet()
+				specific[req].add(arch)
 
 		for req in sorted(specific.keys(), key = str):
-			self.renderItem(req, arch = specific[req])
+			if type(req) is not str:
+				self.renderItem(req, arch = specific[req])
+			else:
+				self.renderItem(req, arch = specific[req], renderFunc = self.renderConditional)
 
 		self.endList()
+
+	def renderConditional(self, name, arch = None):
+		result = f"conditional: {name}"
+		if arch is not None:
+			result += f" [{arch}]"
+		return result
 
 class ProvidesRenderer(DependencyRenderer):
 	MSG_EMPTY = "not required by anything"

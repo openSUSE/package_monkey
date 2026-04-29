@@ -181,6 +181,7 @@ class NewDB(object):
 		writeDictOfSets('req', genericRpm.solutions, genericRpm.architectures)
 		writeDictOfSets('scn', genericRpm.validScenarios, genericRpm.architectures)
 		writeDictOfSets('ver', genericRpm.versions, genericRpm.architectures)
+		writeDictOfSets('cond', genericRpm.conditionals, genericRpm.architectures)
 
 		unrDict = genericRpm.unresolvables
 		common = unrDict.common
@@ -337,6 +338,8 @@ class NewDB(object):
 					key = w.pop(0)
 					dep = ' '.join(w)
 					updateDictOfSets(currentRpm.unresolvables, [key, dep])
+				elif cmd == 'cond':
+					updateDictOfSets(currentRpm.conditionals, w)
 				elif cmd == 'build':
 					name = w.pop(0)
 
@@ -476,6 +479,7 @@ class GenericRpm(RpmBase):
 		self.controllingScenarios = self.DictOfSetsWithCommonTracking()
 		self.unresolvables = self.DictOfSetsWithCommonTracking()
 		self.versions = self.DictOfSetsWithCommonTracking()
+		self.conditionals = self.DictOfSetsWithCommonTracking()
 
 		# used by the 3rd stage only
 		self.labelHints = None
@@ -522,6 +526,12 @@ class GenericRpm(RpmBase):
 
 	def getControllingScenarios(self, arch):
 		return self.controllingScenarios.get(arch)
+
+	def addConditional(self, arch, cond):
+		self.conditionals.add(arch, str(cond.parsed))
+
+	def getConditionals(self, arch):
+		return self.conditionals.get(arch)
 
 	@property
 	def resolvedRequires(self):

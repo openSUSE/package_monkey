@@ -15,6 +15,7 @@ from .newdb import GenericRpm
 from .arch import *
 from .packages import PackageCollection, RpmOverrideList
 from .scenario import *
+from .rpmdeps import *
 
 ##################################################################
 # The actual product composition
@@ -67,6 +68,13 @@ class ProductComposition(object):
 		for rpm, archSet in self.rpms.rpmsWithArch():
 			if not rpm.isSynthetic:
 				yield rpm, archSet
+
+	@property
+	def allAvailableRpms(self):
+		result = self.rpms.union(self.releaseRpms)
+		if self.baseProduct is not None:
+			result.update(self.baseProduct.allAvailableRpms)
+		return result
 
 	def getRpmArchitectures(self, rpm):
 		productArchSet = ArchSet(self.architectures)
@@ -298,7 +306,7 @@ class Composer(object):
 
 			self.resolveReleasePackages(product, classificationResult)
 
-			self.verifyPromises(product, report)
+			self.verifyPromises(product, report, classificationResult)
 
 			product.rpms.update(product.releaseRpms)
 
@@ -334,7 +342,7 @@ class Composer(object):
 		if product.releaseRpms and self.releaseScenario:
 			product.releaseScenario = classificationResult._db.lookupRpm(self.releaseScenario)
 
-	def verifyPromises(self, product, report):
+	def verifyPromises(self, product, report, classificationResult):
 		validator = PromiseValidator(product, verbose = self.verbose)
 
 		productArchitectures = ArchSet(product.architectures)
@@ -350,13 +358,7 @@ class Composer(object):
 
 				supportedScenarios = set()
 				for s in requiredScenarios:
-					if '|' in s:
-						check = set(s.split('|'))
-					else:
-						# keep this around for a few weeks in case some people still
-						# use the 'old' mode (which breaks when libstdc++ will be covered
-						# by a scenario)
-						check = set(s.split('+'))
+					check = set(s.split('|'))
 
 					if check.issubset(validator._allSupportedScenarios):
 						supportedScenarios.add(s)
@@ -365,6 +367,15 @@ class Composer(object):
 					report.add(f"{product}/{arch}: dependencies of {rpm} cannot be satisfied")
 					report.add(f"   {rpm} is valid in these scenarios: {' '.join(requiredScenarios)}")
 					report.add(f"   but none of these is supported by the product")
+
+		for rpm in validator.rpmsWithConditionalDependencies:
+			db = classificationResult.db
+
+			for string in rpm.conditionals.common:
+				validator.validateConditionalRequirement(db, rpm, string, report)
+			for arch, depSet in rpm.conditionals.items():
+				for string in depSet.difference(rpm.conditionals.common):
+					validator.validateConditionalRequirement(db, rpm, string, report, arch)
 
 	def overrideRpms(self, product, report, classificationResult):
 		excludeRpms = product._overrideRpmsExclude.toRpms(classificationResult.db)
@@ -465,10 +476,14 @@ class Composer(object):
 
 class PromiseValidator(object):
 	def __init__(self, product, verbose = False):
+		self.product = product
 		self.verbose = verbose
 		self.rpmsDependingOnScenario = set()
 		self.regularRpms = set()
 		self._allSupportedScenarios = ScenarioTupleSet()
+
+		self.allVisibleRpms = product.allAvailableRpms
+		self.rpmsWithConditionalDependencies = set()
 
 		self.addProduct(product)
 
@@ -503,9 +518,52 @@ class PromiseValidator(object):
 				if isMainProduct and rpm.validScenarios.common:
 					self.rpmsDependingOnScenario.add(rpm)
 
+				if isMainProduct and rpm.conditionals:
+					self.rpmsWithConditionalDependencies.add(rpm)
+
 		if product.baseProduct is not None and product.type == product.TYPE_EXTENSION:
 			with loggingFacade.temporaryIndent():
 				self.addProduct(product.baseProduct, parentProduct = product)
+
+	def validateConditionalRequirement(self, db, rpm, string, report, arch = None):
+		try:
+			conditional = BooleanDependency.parseCompiled(string)
+		except Exception as e:
+			errormsg(f"{rpm}: cannot parse conditional dependency {string} (exception {e})")
+			return
+
+		if arch:
+			rpmid = f"{rpm}.{arch}"
+		else:
+			rpmid = rpm.name
+
+		if rpm.trace:
+			infomsg(f"{self.product}/{rpmid}: verifying the conditional dependency {string} can be resolved")
+
+		for assertion in conditional.permutations():
+			dependingOn = set(map(db.lookupRpm, assertion.include))
+			if not dependingOn.issubset(self.allVisibleRpms):
+				lacking = dependingOn.difference(self.allVisibleRpms)
+				if rpm.trace:
+					infomsg(f"ignore conditional {assertion.asNode()}: product {self.product} does not include {' '.join(map(str, lacking))}")
+				continue
+
+			satisfied = False
+			for impl in assertion.solutions:
+				required = set(map(db.lookupRpm, impl.include))
+				if required.issubset(self.allVisibleRpms):
+					if rpm.trace:
+						infomsg(f"can satisfy conditional {impl.asNode()}")
+					satisfied = True
+					break
+
+			if satisfied:
+				continue
+
+			report.add(f"{self.product}: conditional dependency {string} of {rpmid} cannot be satisfied")
+			for impl in assertion.solutions:
+				missing = set(map(db.lookupRpm, impl.include)).difference(self.allVisibleRpms)
+				report.add(f"   {impl.asNode()}: missing {' '.join(map(str, missing))}")
 
 class YamlAllProducer(YamlDictProducerBase):
 	def __init__(self, *args, **kwargs):

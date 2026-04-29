@@ -78,6 +78,7 @@ class ProductCodebase(object):
 
 		self.architectures = ArchSet()
 		self.apiURL = None
+		self.hintsFile = None
 		self.buildProjects = []
 		self.sourceProjects = []
 
