@@ -35,6 +35,7 @@ products:
          runtime:       include support=l3
          x86_64_v3:     include support=l3
          user:          include support=l3
+         important:     include support=l3
          api:           include support=l2
          x86_64_v3_api: include support=l2
          apidoc:        include support=l2
@@ -72,6 +73,11 @@ exclude RPMs that have unresolved dependencies (no surprise here).
 The list also mentions `noship`, which is worth explaining briefly. Currently, the `noship` and `private`
 rpm annotations are handled using special RPM classes. However, this is an implementation detail which
 may change in the future, so you should not rely on this fact.
+
+`important` is instead used to mark some packages as important. If for some reason important packages
+are excluded for whatever reason (such as a new unclassified dependency), the compose call would fail,
+making it obvious that something is wrong.  
+Can be useful for pattern or release packages, where we should really ensure they get in.
 
 In addition to the verdict (`include` vs `exclude`), you can see, in addition, the support level per
 rpm class. In this example, we provide full Level 3 support for classes that relate to running an
