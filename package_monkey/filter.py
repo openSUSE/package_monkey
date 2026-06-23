@@ -415,6 +415,7 @@ class Classification(object):
 			self.privateApiClass = self.createLabel('private_api', Classification.TYPE_CLASS)
 			self.testClass = self.createLabel('test', Classification.TYPE_CLASS)
 			self.unresolvableClass = self.createLabel('unresolved', Classification.TYPE_CLASS)
+			self.importantClass = self.createLabel('important', Classification.TYPE_CLASS)
 
 			self.policy = None
 
