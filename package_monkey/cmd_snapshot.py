@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import fnmatch
 
-from .util import infomsg, errormsg, warnmsg
+from .util import infomsg, errormsg, warnmsg, mergetree
 from .options import ApplicationBase
 from .snapshots import *
 
@@ -117,7 +117,7 @@ class PublishApplication(ApplicationBase):
 
 	def copyFiles(self, sourceDir, destDir, onlyPatterns = None):
 		if onlyPatterns is None:
-			shutil.copytree(sourceDir, destDir, dirs_exist_ok = True)
+			mergetree(sourceDir, destDir, dirs_exist_ok = True)
 		else:
 			def ignoreNames(dir, entries):
 				result = []
@@ -126,4 +126,4 @@ class PublishApplication(ApplicationBase):
 						result.append(name)
 				return result
 
-			shutil.copytree(sourceDir, destDir, dirs_exist_ok = True, ignore = ignoreNames)
+			mergetree(sourceDir, destDir, dirs_exist_ok = True, ignore = ignoreNames)
