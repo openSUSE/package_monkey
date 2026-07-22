@@ -6,6 +6,7 @@ import fnmatch
 import locale
 import os
 import datetime
+import shutil
 
 ##################################################################
 # A simple class for batched processing
@@ -169,6 +170,38 @@ def filterLowestRanking(items, getRank):
 
 def filterHighestRanking(items, getRank):
 	return filterRanking(items, getRank, int.__gt__)
+
+##################################################################
+#
+# shutil.copytree implementation that supports existing
+# directories - mimics the behaviour of dirs_exist_ok=True
+# that has been implemented in Python 3.8+
+#
+##################################################################
+def mergetree(sourceDir, destDir, ignore=None, dirs_exist_ok=False):
+	entries = list(os.scandir(sourceDir))
+	ignored_files = ignore(
+		os.fspath(sourceDir),
+		[e.name for e in entries]
+	) if ignore is not None else []
+	
+	os.makedirs(destDir, exist_ok=dirs_exist_ok)
+	
+	for entry in entries:
+		if entry.name in ignored_files:
+			continue
+		
+		destFile = os.path.join(destDir, entry.name)
+		
+		if entry.is_dir():
+			mergetree(entry.path, destFile, ignore=ignore,
+				dirs_exist_ok=dirs_exist_ok)
+		else:
+			shutil.copy2(entry.path, destFile)
+	
+	shutil.copystat(sourceDir, destDir)
+	
+	return destDir
 
 ##################################################################
 #
