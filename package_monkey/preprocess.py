@@ -2139,7 +2139,7 @@ class PreprocessorHints(object):
 			return
 
 		for name in rpmNames:
-			pattern = name.replace('%', '([0-9._]+|[a-z_]*)') + '$'
+			pattern = name.replace('+', '\\+').replace('%', '([0-9._]+|[a-z_]*)') + '$'
 			self._newScenarioManager.addConcreteScenarioPattern(scenarioName, abstractPackageName, pattern)
 
 		# for each known variable value, instantiate the corresponding name->scenario link
