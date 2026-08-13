@@ -218,14 +218,16 @@ class RpmOverrideList(object):
 		for item in self:
 			rpm = db.lookupRpm(item.name)
 			if rpm is not None:
+				newArchSet = item.archSet or rpm.architectures
 				if item.archSet is not None:
 					if rpm.trace:
 						infomsg(f"Override {rpm}: {item.archSet}")
 					if not item.archSet.issubset(rpm.architectures):
 						missing = item.archSet.difference(rpm.architectures)
-						raise Exception(f"Refusing to override {rpm}: unsupported architecture(s) {missing}")
+						newArchSet = newArchSet.difference(missing)
+						warnmsg(f"Override {rpm}: these architectures are disabled: {missing}, skipping")
 
-				result.add(rpm, item.archSet or rpm.architectures)
+				result.add(rpm, newArchSet)
 				continue
 
 			if create:
