@@ -245,6 +245,10 @@ class RpmOverrideList(object):
 				result.add(rpm, rpm.architectures)
 				continue
 
+			if not item.archSet.issubset(db.architectures):
+				warnmsg(f"Override {item.name}: skipping as not available for the enabled architectures")
+				continue
+
 			errormsg(f"override list specifies unknown rpm {item.name}")
 			nerrors += 1
 
