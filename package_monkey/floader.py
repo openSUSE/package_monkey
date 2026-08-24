@@ -1411,6 +1411,8 @@ class CodebaseLoader(MonkeyConfigLoader):
 				self.codebase.buildProjects = self.context.asStringList(key, value)
 			elif key == 'ghosts':
 				self.codebase.ghostRpms = self.context.asRpmOverrideList(key, value)
+			elif key == 'enabled_products_override':
+				self.codebase.enabledProductsOverride = self.context.asStringList(key, value)
 			else:
 				super().processKeyValue(key, value)
 

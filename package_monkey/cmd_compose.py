@@ -18,7 +18,7 @@ class ComposerApplication(ApplicationBase):
 		gadget = ClassificationGadget(db, self.modelDescription, traceMatcher = self.traceMatcher)
 		classificationResult = gadget.solve(self.productCodebase)
 
-		composer = Composer(gadget.classificationScheme, **kwargs)
+		composer = Composer(gadget.classificationScheme, codebaseModel=self.productCodebase, **kwargs)
 		self.modelDescription.loadProductComposition(composer)
 
 		composer.compose(classificationResult)

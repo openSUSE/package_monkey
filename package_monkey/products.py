@@ -81,6 +81,7 @@ class ProductCodebase(object):
 		self.hintsFile = None
 		self.buildProjects = []
 		self.sourceProjects = []
+		self.enabledProductsOverride = []
 
 		self.ghostRpms = None
 		self.nameFilter = None
