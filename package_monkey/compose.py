@@ -126,10 +126,11 @@ class ProductComposition(object):
 		self._overrideRpmsExclude = rpmOverrideList
 
 class Composer(object):
-	def __init__(self, classificationScheme, includeExplanations = False, verbose = True):
+	def __init__(self, classificationScheme, includeExplanations = False, verbose = True, codebaseModel = None):
 		self.classificationScheme = classificationScheme
 		self.includeExplanations = includeExplanations
 		self.verbose = verbose
+		self.codebaseModel = codebaseModel
 
 		self._release = None
 		self.defaultLifecycle = None
@@ -148,9 +149,23 @@ class Composer(object):
 		self._rpmProductMembership = DictOfSets()
 		self._buildProductMembership = DictOfSets()
 
+		# By default every product specified in the release main file
+		# is getting processed.
+		# In some cases, this might be unwanted, so codebases might
+		# use the "enabled_products_override" list to specify a list
+		# of enabled products.
+		self.enabledProductsOverride = \
+			self.codebaseModel.enabledProductsOverride \
+			if self.codebaseModel is not None \
+			else []
+
 	@property
 	def products(self):
-		return iter(self._products.values())
+		for id, product in self._products.items():
+			if self.enabledProductsOverride and id not in self.enabledProductsOverride:
+				continue
+
+			yield product
 
 	def bottomUpProductTraversal(self):
 		return sorted(self.products, key = ProductComposition.sortkey)
