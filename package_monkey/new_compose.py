@@ -1099,6 +1099,8 @@ class CompositionRules(object):
 		if rpmControl.isExcluded:
 			if trace:
 				infomsg(f"{rpmControl} is excluded")
+			if rpmControl.rpmClass == classificationResult.classificationScheme.importantClass:
+				raise Exception(f"{rpmControl}: package marked as important, but it is excluded")
 			return None
 
 		if not constraints.isValidClass(rpmControl.rpmClass):
@@ -1806,7 +1808,7 @@ class ProductSpec(object):
 		policy = rules.defaultPolicy
 		policy.closureRules = ClosureRules("auto")
 
-		for name in ('runtime', 'libraries', 'default', 'x86_64_v3', 'user', 'api', 'x86_64_v3_api', 'apidoc', 'doc', 'man', 'i18n'):
+		for name in ('runtime', 'libraries', 'default', 'x86_64_v3', 'user', 'api', 'x86_64_v3_api', 'apidoc', 'doc', 'man', 'i18n', 'important'):
 			rules.requestClass(name, policy.closureRules)
 
 class CompositionBuilder(object):
